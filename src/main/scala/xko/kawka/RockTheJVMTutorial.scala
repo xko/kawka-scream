@@ -15,7 +15,9 @@ import org.apache.kafka.streams.{KafkaStreams, StreamsConfig, Topology}
 
 import java.util.Properties
 import scala.concurrent.duration._
+import scala.io.StdIn.readLine
 import scala.jdk.DurationConverters.ScalaDurationOps
+import scala.util.Using
 
 // https://blog.rockthejvm.com/kafka-streams/
 object RockTheJVMTutorial {
@@ -115,8 +117,10 @@ object RockTheJVMTutorial {
 
         println(topology.describe())
 
-        val application: KafkaStreams = new KafkaStreams(topology, props)
-        application.start()
+        Using(new KafkaStreams(topology, props)){ streams =>
+            streams.start()
+            readLine
+        }
 
 
     }
