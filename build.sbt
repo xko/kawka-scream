@@ -11,6 +11,7 @@ libraryDependencies ++= Seq(
     "io.circe" %% "circe-parser" % "0.14.5"
 )
 
+libraryDependencies += "com.typesafe.scala-logging" %% "scala-logging" % "3.9.5"
 libraryDependencies += "org.slf4j" % "slf4j-simple" % "2.0.5"
 
 val AllTest = "test,it"
