@@ -18,6 +18,7 @@ import scala.concurrent.duration._
 import scala.io.StdIn.readLine
 import scala.jdk.DurationConverters.ScalaDurationOps
 import scala.util.Using
+import Circe._
 
 // https://blog.rockthejvm.com/kafka-streams/
 object RockTheJVMTutorial {
@@ -38,21 +39,6 @@ object RockTheJVMTutorial {
     case class Discount(profile: Profile, amount: Double) // in percentage points
 
     case class Payment(orderId: OrderId, status: String)
-
-    implicit def serde[A >: Null : Decoder : Encoder]: Serde[A] = {
-        val serializer = (a: A) => a.asJson.noSpaces.getBytes
-        val deserializer = (aAsBytes: Array[Byte]) => {
-            val aAsString = new String(aAsBytes)
-            val aOrError = decode[A](aAsString)
-            aOrError match {
-                case Right(a) => Option(a)
-                case Left(error) =>
-                    println(s"There was an error converting the message $aOrError, $error")
-                    Option.empty
-            }
-        }
-        Serdes.fromFn[A](serializer, deserializer)
-    }
 
     val builder = new StreamsBuilder
     val usersOrdersStreams: KStream[UserId, Order] = builder.stream[UserId, Order](OrdersByUserTopic)
