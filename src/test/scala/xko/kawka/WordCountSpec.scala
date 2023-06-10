@@ -2,24 +2,16 @@ package xko.kawka
 
 import org.apache.kafka.common.serialization.{LongDeserializer, StringDeserializer, StringSerializer}
 import org.apache.kafka.streams.{KeyValue, StreamsConfig, TopologyTestDriver}
+import org.apache.kafka.test.TestUtils
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
-import org.apache.kafka.test.TestUtils
 import org.apache.kafka.streams.scala.ImplicitConversions._
 import org.apache.kafka.streams.scala.serialization.Serdes._
 
 import java.util.Properties
 import scala.jdk.CollectionConverters._
 
-class WordCountSpec extends AnyWordSpec with Matchers {
-    val config: Properties = {
-        val p = new Properties()
-        p.put(StreamsConfig.APPLICATION_ID_CONFIG, "wordcount-scala-integration-test")
-        p.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "dummy config")
-        // Use a temporary directory for storing state, which will be automatically removed after the test.
-        p.put(StreamsConfig.STATE_DIR_CONFIG, TestUtils.tempDirectory.getAbsolutePath)
-        p
-    }
+class WordCountSpec extends AnyWordSpec with Matchers with TestConfig {
 
     "WordCount" should {
         "count words" in {
