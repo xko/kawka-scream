@@ -35,14 +35,16 @@ import scala.concurrent.duration._
 object FollowerMaze {
     type N = Long
     type User = Long
+    type Follower = User
+    type Followee = User
 
     sealed trait Msg
 
     case class Connect(user: User) extends Msg
 
-    case class Follow(from: User, to: User) extends Msg
+    case class Follow(from: Follower, to: Followee) extends Msg
 
-    case class Unfollow(from: User, to: User) extends Msg
+    case class Unfollow(from: Follower, to: Followee) extends Msg
 
 //   TODO case class Broadcast() extends Msg
 
@@ -91,20 +93,50 @@ object FollowerMaze {
     }
 
 
-    def sorted(builder: StreamsBuilder): KStream[N, Msg] = {
-        val src = builder.stream[N, Msg](Topics.source)
+    def sorted(builder: StreamsBuilder, src: KStream[N,Msg]): KStream[N, Msg] = { // TODO: works only with one partition
         val ooo = builder.stream[N, Msg](Topics.ooo)
              .process( Processors.supplier[N, Msg, N, Msg, N, Msg, Delayer](new Delayer(_)) ) // <<< why not inferred?
         val withOrderInfo: KStream[N, (N, Msg)] = src.merge(ooo)
              .process( Processors.supplier[N, Msg, N, (N, Msg), String, N, OrderInformer](new OrderInformer(_)) ) // <<< why not inferred?
 
-        val m = withOrderInfo.split().branch({
+        val ordered = withOrderInfo.split().branch({
             case (n, expected -> _) => n != expected
         }, Branched.withConsumer { outOfOrder: KStream[N, (N, Msg)] =>
             outOfOrder.mapValues(_._2).to(Topics.ooo)
-        }).defaultBranch()
-        m.values.head.mapValues(_._2)
+        }).defaultBranch().values.head
+
+        ordered.mapValues(_._2)
     }
 
+    def followers(builder: StreamsBuilder, src: KStream[N, Msg]): KTable[Followee, Set[Follower]] = {
+        src.filter { (_, msg) => msg match {
+            case Follow(_,_) => true
+            case Unfollow(_,_) => true
+            case _ => false
+        }}.groupBy[Followee]{ (_, msg) =>msg match {
+            case Follow(_, followee) => followee
+            case Unfollow(_, followee) => followee
+        }}.aggregate(Set[Follower]()){ (_, msg, followers) => msg match {
+                case Follow(follower, _) => followers + follower
+                case Unfollow(follower, _) => followers - follower
+        }}
+    }
+
+    def delivered(builder: StreamsBuilder, src: KStream[N, Msg], followers: KTable[Followee, Set[Follower]]): KStream[User, Msg] = {
+        val bySender = src.flatMap[User,Msg] { (_, msg) =>
+            msg match {
+                case Follow(follower, _) => Some((follower, msg))
+                case Update(followee) => Some((followee, msg))
+                case _ => None
+            }
+        }
+        val withReceivers: KStream[User, (Msg, Set[User])] = bySender.leftJoin[Set[Follower],(Msg,Set[Follower])](followers) {
+            (msg, followers) => (msg, Option(followers).toSet.flatten)
+        }
+        withReceivers.flatMap { (sender, msgWReceivers) => msgWReceivers match {
+            case (update@Update(_), followers)   => followers.map(follower => (follower, update))
+            case (follow@Follow(_, followee),_)  => Set((followee, follow))
+        }}
+    }
 
 }
