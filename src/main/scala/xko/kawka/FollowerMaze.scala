@@ -24,6 +24,7 @@ import com.typesafe.scalalogging.LazyLogging
 import org.apache.kafka.streams.processor.{PunctuationType, Punctuator, api}
 import org.apache.kafka.streams.processor.api.{ContextualProcessor, Processor, ProcessorContext, ProcessorSupplier}
 import org.apache.kafka.streams.state.{KeyValueStore, StoreBuilder, Stores}
+import xko.kawka.Processors.{StoreProvider, WithStore, memStore}
 
 import java.util
 import scala.jdk.CollectionConverters._
@@ -48,7 +49,6 @@ object FollowerMaze {
     case class Update(from: User) extends Msg
 
 
-
     object Topics {
         val source = "source"
         val sink = "sink"
@@ -56,27 +56,21 @@ object FollowerMaze {
 
     }
 
-    class OrderInformer(storeName: String) extends ContextualProcessor[N, Msg, N, (N, Msg)] {
-        private var store: KeyValueStore[String, N] = _;
-
-        override def init(context: ProcessorContext[N, (N, Msg)]): Unit = {
-            super.init(context)
-            store = context.getStateStore(storeName)
-        }
-
+    class OrderInformer(storeName: String) extends WithStore[N, Msg, N, (N, Msg), String, N](storeName) {
         override def process(record: api.Record[N, Msg]): Unit = {
             val expected: N = Option[N](store.get("expected-next")).getOrElse(1)
             if (record.key() == expected) store.put("expected-next", expected + 1)
-            context().forward(record.withValue((expected ,record.value)))
+            context().forward(record.withValue((expected, record.value)))
         }
     }
 
-    class Delayer(storeName: String) extends ContextualProcessor[N, Msg, N, Msg] with LazyLogging{
-        private var store: KeyValueStore[N, Msg] = _;
+    implicit val orderInformerInMem = new StoreProvider[String, N, OrderInformer] {
+        override def provide(name: String) = memStore(name)
+    }
 
+    class Delayer(storeName: String) extends WithStore[N, Msg, N, Msg,N,Msg](storeName) with LazyLogging {
         override def init(context: ProcessorContext[N, Msg]): Unit = {
             super.init(context)
-            store = context.getStateStore(storeName)
             context.schedule(10.milli.toJava, PunctuationType.WALL_CLOCK_TIME, (timestamp: Long) => {
                 logger.info(s"Resending...")
                 store.all().asScala.foreach { kv =>
@@ -86,27 +80,23 @@ object FollowerMaze {
                 }
             })
         }
-
-
         override def process(record: api.Record[N, Msg]): Unit = {
             logger.info(s"Process:$record")
             store.put(record.key, record.value)
         }
     }
 
-    def memoryStoredProc[K,V,RK,RV,SK : Serde,SV : Serde](proc: String => Processor[K,V,RK,RV], name:String = java.util.UUID.randomUUID.toString ) = { new ProcessorSupplier[K,V,RK,RV] {
-        override def get(): Processor[K,V,RK,RV]= proc("store-" + name)
+    implicit val delayerInMem = new StoreProvider[N,Msg,Delayer] {
+        override def provide(name: String): StoreBuilder[KeyValueStore[N, Msg]] = memStore(name)
+    }
 
-        override def stores(): util.Set[StoreBuilder[_]] = {
-            Collections.singleton(Stores.keyValueStoreBuilder[SK, SV](Stores.inMemoryKeyValueStore("store-"+name), implicitly[Serde[SK]], implicitly[Serde[SV]]))
-        }
 
-    } }
-
-    def sorted(builder: StreamsBuilder): KStream[N,Msg] = {
+    def sorted(builder: StreamsBuilder): KStream[N, Msg] = {
         val src = builder.stream[N, Msg](Topics.source)
-        val ooo = builder.stream[N, Msg](Topics.ooo).process( memoryStoredProc[N,Msg,N,Msg,N,Msg](new Delayer(_)) )
-        val withOrderInfo: KStream[N, (N, Msg)] = src.merge(ooo).process( memoryStoredProc[N,Msg,N,(N,Msg),String,N](new OrderInformer(_)  ))
+        val ooo = builder.stream[N, Msg](Topics.ooo)
+             .process( Processors.supplier[N, Msg, N, Msg, N, Msg, Delayer](new Delayer(_)) ) // <<< why not inferred?
+        val withOrderInfo: KStream[N, (N, Msg)] = src.merge(ooo)
+             .process( Processors.supplier[N, Msg, N, (N, Msg), String, N, OrderInformer](new OrderInformer(_)) ) // <<< why not inferred?
 
         val m = withOrderInfo.split().branch({
             case (n, expected -> _) => n != expected
@@ -115,8 +105,6 @@ object FollowerMaze {
         }).defaultBranch()
         m.values.head.mapValues(_._2)
     }
-
-
 
 
 }
