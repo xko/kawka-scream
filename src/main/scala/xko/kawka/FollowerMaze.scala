@@ -50,14 +50,6 @@ object FollowerMaze {
 
     case class Update(from: User) extends Msg
 
-
-    object Topics {
-        val source = "source"
-        val sink = "sink"
-        val ooo = "ooo"
-
-    }
-
     class OrderInformer(storeName: String) extends WithStore[N, Msg, N, (N, Msg), String, N](storeName) {
         override def process(record: api.Record[N, Msg]): Unit = {
             val expected: N = Option[N](store.get("expected-next")).getOrElse(1)
@@ -93,8 +85,9 @@ object FollowerMaze {
     }
 
 
+    val OutOfOrderTName="FollowerMaze-OOO"
     def sorted(builder: StreamsBuilder, src: KStream[N,Msg]): KStream[N, Msg] = { // TODO: works only with one partition
-        val ooo = builder.stream[N, Msg](Topics.ooo)
+        val ooo = builder.stream[N, Msg](OutOfOrderTName)
              .process( Processors.supplier[N, Msg, N, Msg, N, Msg, Delayer](new Delayer(_)) ) // <<< why not inferred?
         val withOrderInfo: KStream[N, (N, Msg)] = src.merge(ooo)
              .process( Processors.supplier[N, Msg, N, (N, Msg), String, N, OrderInformer](new OrderInformer(_)) ) // <<< why not inferred?
@@ -102,13 +95,13 @@ object FollowerMaze {
         val ordered = withOrderInfo.split().branch({
             case (n, expected -> _) => n != expected
         }, Branched.withConsumer { outOfOrder: KStream[N, (N, Msg)] =>
-            outOfOrder.mapValues(_._2).to(Topics.ooo)
+            outOfOrder.mapValues(_._2).to(OutOfOrderTName)
         }).defaultBranch().values.head
 
         ordered.mapValues(_._2)
     }
 
-    def followers(builder: StreamsBuilder, src: KStream[N, Msg]): KTable[Followee, Set[Follower]] = {
+    def followers(src: KStream[N, Msg]): KTable[Followee, Set[Follower]] = {
         src.filter { (_, msg) => msg match {
             case Follow(_,_) => true
             case Unfollow(_,_) => true
@@ -122,12 +115,12 @@ object FollowerMaze {
         }}
     }
 
-    def delivered(builder: StreamsBuilder, src: KStream[N, Msg], followers: KTable[Followee, Set[Follower]]): KStream[User, Msg] = {
+    def delivered(src: KStream[N, Msg], followers: KTable[Followee, Set[Follower]]): KStream[User, Msg] = {
         val bySender = src.flatMap[User,Msg] { (_, msg) =>
             msg match {
-                case Follow(follower, _) => Some((follower, msg))
-                case Update(followee) => Some((followee, msg))
-                case _ => None
+                case Follow(follower, _) => List((follower, msg))
+                case Update(followee) => List((followee, msg))
+                case _ => Nil
             }
         }
         val withReceivers: KStream[User, (Msg, Set[User])] = bySender.leftJoin[Set[Follower],(Msg,Set[Follower])](followers) {
